@@ -31,7 +31,8 @@ internal data class ContentPage(
     val episodes: List<EpisodeRef>
 )
 
-internal data class Stream(val url: String, val quality: Int, val label: String)
+/** [quality] is the site's label until the provider corrects it; [mp4] is the direct file, used to measure it. */
+internal data class Stream(val url: String, val quality: Int, val dub: String, val mp4: String? = null)
 internal data class Subtitle(val lang: String, val url: String)
 
 /** Pure HTML/text parsing, kept apart from the host's CloudStream API so it runs in JVM tests. */
@@ -143,15 +144,20 @@ internal object RezkaParser {
         Regex("""data-tab_id="(\d+)"""").findAll(html).mapNotNull { it.groupValues[1].toIntOrNull() }.toSet()
 
     /**
-     * "[360p]urlA or urlB,[480p]url,...,[<span class="pjs-prem-quality">4K<img/></span>]url".
-     * The "premium" qualities come back with working URLs; the lock is UI-only on the site.
+     * "[360p]urlA.m3u8 or urlA.mp4,[480p]url,...,[<span class="pjs-prem-quality">4K<img/></span>]url".
+     * Premium entries (1080p Ultra, 2K, 4K) are dropped: without a subscription they all point
+     * to one 60-second "buy premium" clip. Labels are what the site claims; see [realQuality].
      */
     fun streams(raw: String, dub: String): List<Stream> =
         Regex("""\[([^\]]*)\]([^\[]+?)(?=,\[|$)""").findAll(raw).mapNotNull { match ->
-            val qualityLabel = Jsoup.parse(match.groupValues[1]).text().trim()
-            val url = match.groupValues[2].split(" or ").mapNotNull { it.trim().toHttpUrlOrNull() }
-                .firstOrNull { it.username.isEmpty() && it.password.isEmpty() } ?: return@mapNotNull null
-            Stream(url.toString(), quality(qualityLabel), "$dub · $qualityLabel".trim())
+            val rawLabel = match.groupValues[1]
+            if (rawLabel.contains("prem", true)) return@mapNotNull null
+            val qualityLabel = Jsoup.parse(rawLabel).text().trim()
+            val urls = match.groupValues[2].split(" or ").mapNotNull { it.trim().toHttpUrlOrNull() }
+                .filter { it.username.isEmpty() && it.password.isEmpty() }
+            val url = urls.firstOrNull() ?: return@mapNotNull null
+            val mp4 = urls.firstOrNull { it.encodedPath.endsWith(".mp4") }?.toString()
+            Stream(url.toString(), quality(qualityLabel), dub, mp4)
         }.distinctBy { it.url }.toList()
 
     fun quality(label: String): Int = when {
@@ -159,6 +165,62 @@ internal object RezkaParser {
         label.contains("2K", true) -> 1440
         else -> Regex("""\d{3,4}""").find(label)?.value?.toIntOrNull() ?: 0
     }
+
+    private val LADDER = listOf(240, 360, 480, 720, 1080, 1440, 2160)
+
+    /** Class of a frame width (widths stay standard for letterboxed films, heights do not). */
+    fun qualityOfWidth(width: Int): Int = when {
+        width >= 3000 -> 2160
+        width >= 2200 -> 1440
+        width >= 1700 -> 1080
+        width >= 1100 -> 720
+        width >= 800 -> 480
+        width >= 560 -> 360
+        else -> 240
+    }
+
+    /**
+     * How many rungs the site's labels overstate the real picture. Measured live for guests:
+     * "1080p" is a 1280x720 file, "720p" is 854x480 and so on, i.e. one rung.
+     */
+    fun labelOffset(labeled: Int, actual: Int): Int {
+        val from = LADDER.indexOf(labeled)
+        val to = LADDER.indexOf(actual)
+        if (from < 0 || to < 0) return 0
+        return (from - to).coerceIn(0, 3)
+    }
+
+    fun realQuality(labeled: Int, offset: Int): Int {
+        val i = LADDER.indexOf(labeled)
+        return if (i < 0 || offset <= 0) labeled else LADDER[(i - offset).coerceAtLeast(0)]
+    }
+
+    /** Only streams at [min] or better; a dub without any keeps its single best stream. */
+    fun best(streams: List<Stream>, min: Int): List<Stream> =
+        streams.filter { it.quality >= min }.ifEmpty { listOfNotNull(streams.maxByOrNull { it.quality }) }
+
+    /** Largest video track width in an MP4 head ("tkhd" boxes, 16.16 fixed width/height at the end). */
+    fun mp4Width(head: ByteArray): Int? {
+        var best: Int? = null
+        var i = 4
+        while (i + 4 <= head.size) {
+            if (head[i] == 't'.code.toByte() && head[i + 1] == 'k'.code.toByte() &&
+                head[i + 2] == 'h'.code.toByte() && head[i + 3] == 'd'.code.toByte()) {
+                val size = int32(head, i - 4)
+                val end = i - 4 + size
+                if (size in 84..200 && end <= head.size) {
+                    val width = int32(head, end - 8) ushr 16
+                    if (width > 0 && width > (best ?: 0)) best = width
+                }
+            }
+            i++
+        }
+        return best
+    }
+
+    private fun int32(b: ByteArray, at: Int) =
+        ((b[at].toInt() and 255) shl 24) or ((b[at + 1].toInt() and 255) shl 16) or
+            ((b[at + 2].toInt() and 255) shl 8) or (b[at + 3].toInt() and 255)
 
     /** "[Русский]https://…vtt,[Українська]https://…vtt,[English]https://…vtt" */
     fun subtitles(raw: String?): List<Subtitle> {

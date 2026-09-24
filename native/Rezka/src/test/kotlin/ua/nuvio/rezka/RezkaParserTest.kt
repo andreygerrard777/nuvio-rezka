@@ -112,15 +112,52 @@ class RezkaParserTest {
         assertEquals(Dub("77", "5", "Rezka"), series.dubs.single())
     }
 
-    @Test fun extractsQualitiesIncludingPremiumAndRejectsNonHttpUrls() {
+    @Test fun dropsPremiumStubsAndRejectsNonHttpUrls() {
         val raw = "[360p]https://cdn.example/a.mp4:hls:manifest.m3u8 or https://cdn.example/a.mp4," +
-            "[1080p]https://cdn.example/b.m3u8,[<span class=\"pjs-prem-quality\">1080p Ultra<img src=\"x\"></span>]https://cdn.example/c.m3u8," +
-            "[<span class=\"pjs-prem-quality\">4K<img src=\"x\"></span>]https://cdn.example/d.m3u8,[480p]javascript:bad"
+            "[1080p]https://cdn.example/b.mp4:hls:manifest.m3u8 or https://cdn.example/b.mp4," +
+            "[<span class=\"pjs-prem-quality\">1080p Ultra<img src=\"x\"></span>]https://cdn.example/stub.m3u8," +
+            "[<span class=\"pjs-prem-quality\">4K<img src=\"x\"></span>]https://cdn.example/stub.m3u8,[480p]javascript:bad"
         val links = RezkaParser.streams(raw, "Дубляж")
-        assertEquals(listOf(360, 1080, 1080, 2160), links.map { it.quality })
+        assertEquals(listOf(360, 1080), links.map { it.quality })
         assertEquals("https://cdn.example/a.mp4:hls:manifest.m3u8", links.first().url)
-        assertEquals("Дубляж · 1080p Ultra", links[2].label)
+        assertEquals("https://cdn.example/b.mp4", links[1].mp4)
+        assertEquals("Дубляж", links[1].dub)
         assertTrue(RezkaParser.streams("false", "x").isEmpty())
+    }
+
+    @Test fun correctsOverstatedLabelsAndKeepsOneLinkPerDub() {
+        // Measured live: "1080p" is 1280x720, "720p" is 854x480 (letterboxed widths stay standard).
+        assertEquals(720, RezkaParser.qualityOfWidth(1280))
+        assertEquals(480, RezkaParser.qualityOfWidth(853))
+        assertEquals(1080, RezkaParser.qualityOfWidth(1920))
+        assertEquals(1, RezkaParser.labelOffset(1080, 720))
+        assertEquals(0, RezkaParser.labelOffset(720, 720))
+        assertEquals(0, RezkaParser.labelOffset(480, 720)) // never inflates
+        assertEquals(720, RezkaParser.realQuality(1080, 1))
+        assertEquals(240, RezkaParser.realQuality(360, 1))
+        assertEquals(1080, RezkaParser.realQuality(1080, 0))
+
+        val all = listOf(240, 360, 480, 720).map { Stream("https://cdn.example/$it.m3u8", it, "D") }
+        assertEquals(listOf(720), RezkaParser.best(all, 720).map { it.quality })
+        assertEquals(listOf(480), RezkaParser.best(all.take(3), 720).map { it.quality }) // dub kept
+        assertTrue(RezkaParser.best(emptyList(), 720).isEmpty())
+    }
+
+    @Test fun readsVideoWidthFromMp4Head() {
+        fun box(type: String, body: ByteArray): ByteArray {
+            val size = 8 + body.size
+            return byteArrayOf((size ushr 24).toByte(), (size ushr 16).toByte(), (size ushr 8).toByte(), size.toByte()) +
+                type.toByteArray() + body
+        }
+        fun tkhd(width: Int, height: Int): ByteArray {
+            val body = ByteArray(84) // version 0 tkhd: width/height are the last 8 bytes (16.16 fixed)
+            fun put(at: Int, v: Int) { body[at] = (v ushr 24).toByte(); body[at + 1] = (v ushr 16).toByte(); body[at + 2] = (v ushr 8).toByte(); body[at + 3] = v.toByte() }
+            put(76, width shl 16); put(80, height shl 16)
+            return box("tkhd", body)
+        }
+        val head = box("ftyp", ByteArray(24)) + box("moov", box("trak", tkhd(0, 0)) + box("trak", tkhd(1280, 720)))
+        assertEquals(1280, RezkaParser.mp4Width(head))
+        assertNull(RezkaParser.mp4Width(ByteArray(100)))
     }
 
     @Test fun parsesSubtitles() {

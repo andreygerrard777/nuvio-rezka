@@ -41,7 +41,7 @@ def package(cs3: Path, repository: str, tag: str, output: Path):
         "name": "HDRezka", "internalName": "Rezka",
         "url": f"{base}/{FILENAME}", "version": version, "apiVersion": 1,
         "status": 1, "language": "uk", "authors": ["nuvio-uk-providers"],
-        "description": "HDRezka: фільми, серіали, мультфільми та аніме. Усі озвучки (українські першими), до 4K, субтитри.",
+        "description": "HDRezka: фільми, серіали, мультфільми та аніме. Усі озвучки (українські першими), найкраща доступна якість (720p), субтитри.",
         "tvTypes": ["Movie", "TvSeries", "Cartoon", "Anime", "AnimeMovie"],
         "iconUrl": "https://www.google.com/s2/favicons?domain=rezka.ag&sz=128",
         "repositoryUrl": f"https://github.com/{repository}",

@@ -70,6 +70,28 @@ internal class NativeHttp {
         }
     }
 
+    /** First [bytes] of a file (HTTP Range); null unless the server answers 200/206. */
+    fun head(url: String, bytes: Int): ByteArray? {
+        val request = Request.Builder().url(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Range", "bytes=0-" + (bytes - 1))
+            .build()
+        return client.newBuilder().followRedirects(true).followSslRedirects(true)
+            .callTimeout(8, TimeUnit.SECONDS).build()
+            .newCall(request).execute().use { response ->
+                if (response.code != 200 && response.code != 206) return null
+                val input = response.body?.byteStream() ?: return null
+                val out = ByteArray(bytes)
+                var filled = 0
+                while (filled < bytes) {
+                    val n = input.read(out, filled, bytes - filled)
+                    if (n < 0) break
+                    filled += n
+                }
+                out.copyOf(filled)
+            }
+    }
+
     companion object {
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
         private const val MAX_BODY = 4L * 1024 * 1024

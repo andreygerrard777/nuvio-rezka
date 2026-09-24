@@ -172,6 +172,14 @@ internal class RezkaSession(
         "season" to season.toString(), "episode" to episode.toString(), "action" to "get_stream"
     )), dub)
 
+    /** Real frame width of a CDN mp4, read from its first 64 KiB; null when not measurable. */
+    fun mp4Width(url: String): Int? = try {
+        http.head(url, 64 * 1024)?.let(RezkaParser::mp4Width)
+    } catch (e: Exception) {
+        if (e is java.util.concurrent.CancellationException) throw e
+        null
+    }
+
     /** Episode list of a dub as the server reports it (used when the page itself has none). */
     fun episodesOf(page: ContentPage, dub: Dub): List<EpisodeRef> {
         val json = ajax(page, mapOf("id" to dub.id, "translator_id" to dub.translator, "action" to "get_episodes"))

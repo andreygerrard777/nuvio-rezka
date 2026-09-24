@@ -21,7 +21,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
@@ -129,6 +131,7 @@ class RezkaProvider : MainAPI() {
         check(page.dubs.isNotEmpty()) { "REZKA stage=links result=NO_DUBS" }
         val limit = Semaphore(PARALLEL_REQUESTS)
         val seenSubtitles = HashSet<String>()
+        val offset = LabelOffset(session)
         val found = coroutineScope {
             page.dubs.map { dub ->
                 async(Dispatchers.IO) {
@@ -144,8 +147,11 @@ class RezkaProvider : MainAPI() {
                             Links(emptyList(), emptyList()) // one broken dub must not hide the rest
                         }
                     }
-                    emit(page, links, seenSubtitles, subtitleCallback, callback)
-                    links.streams.size
+                    val shift = offset.of(links.streams)
+                    val real = links.streams.map { it.copy(quality = RezkaParser.realQuality(it.quality, shift)) }
+                    val chosen = links.copy(streams = RezkaParser.best(real, MIN_QUALITY))
+                    emit(page, chosen, seenSubtitles, subtitleCallback, callback)
+                    chosen.streams.size
                 }
             }.awaitAll().sum()
         }
@@ -162,7 +168,7 @@ class RezkaProvider : MainAPI() {
             val isHls = stream.url.substringBefore('?').endsWith(".m3u8", true)
             callback(newExtractorLink(
                 source = name,
-                name = stream.label,
+                name = "${stream.dub} · ${stream.quality}p",
                 url = stream.url,
                 type = if (isHls) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             ) {
@@ -180,5 +186,36 @@ class RezkaProvider : MainAPI() {
     companion object {
         /** Rezka starts answering 503 when hammered; 4 parallel ajax calls stay well clear of it. */
         private const val PARALLEL_REQUESTS = 4
+
+        /** One link per dub: guests never get more than 720p, lower rungs only bloat the list. */
+        private const val MIN_QUALITY = 720
+    }
+}
+
+/**
+ * Measures once per loadLinks how far the site's labels overstate the real picture, by reading
+ * the width of the best-labelled mp4. Falls back to the one-rung offset seen on every title
+ * checked live, so a CDN hiccup never inflates labels again.
+ */
+private class LabelOffset(private val session: RezkaSession) {
+    private val lock = Mutex()
+    private var measured: Int? = null
+
+    suspend fun of(streams: List<Stream>): Int {
+        if (streams.isEmpty()) return measured ?: DEFAULT
+        return lock.withLock {
+            measured ?: run {
+                val top = streams.maxByOrNull { it.quality }!!
+                val width = top.mp4?.let { session.mp4Width(it) }
+                val value = if (width == null) DEFAULT
+                    else RezkaParser.labelOffset(top.quality, RezkaParser.qualityOfWidth(width))
+                measured = value
+                value
+            }
+        }
+    }
+
+    companion object {
+        const val DEFAULT = 1
     }
 }

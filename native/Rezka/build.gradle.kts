@@ -1,9 +1,9 @@
 // Bump on every behavioural change: Nuvio only re-downloads a plugin whose version grew.
-version = 1
+version = 2
 
 cloudstream {
     language = "uk"
-    description = "HDRezka: фільми, серіали, мультфільми та аніме. Усі озвучки (українські першими), до 4K, субтитри."
+    description = "HDRezka: фільми, серіали, мультфільми та аніме. Усі озвучки (українські першими), найкраща доступна якість (720p), субтитри."
     authors = listOf("nuvio-uk-providers")
     // 1 = working
     status = 1
