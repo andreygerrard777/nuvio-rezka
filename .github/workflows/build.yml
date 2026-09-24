@@ -1,0 +1,66 @@
+name: Build and publish HDRezka plugin
+
+on:
+  push:
+    branches: [main]
+    paths: ['native/**', '.github/workflows/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: native
+    env:
+      RELEASE_TAG: builds
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+      - name: Install required Android platform
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test repository packaging
+        run: python3 -B -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Test and build CS3
+        run: bash ./gradlew --no-daemon :Rezka:testDebugUnitTest :Rezka:make
+      - name: Assemble repository files
+        run: >-
+          python3 scripts/package_repo.py
+          --cs3 Rezka/build/Rezka.cs3
+          --repository "$GITHUB_REPOSITORY"
+          --tag "$RELEASE_TAG"
+          --output dist
+      - name: Publish to the fixed release (install URL never changes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --title "HDRezka for Nuvio" \
+              --notes "Додайте в Nuvio: https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/repo.json"
+          gh release upload "$RELEASE_TAG" dist/Rezka.cs3 dist/plugins.json dist/repo.json --clobber
+          echo "Install URL: https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/repo.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rezka-${{ github.run_number }}
+          path: native/dist/
+          if-no-files-found: error
+      - name: Save test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.run_number }}
+          path: native/Rezka/build/reports/tests/
+          if-no-files-found: ignore
